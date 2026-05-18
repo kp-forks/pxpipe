@@ -322,6 +322,23 @@ describe('transform', () => {
     expect(info.unknownStaticTags).not.toContain('env');
   });
 
+  it('does not flag <types> as an unknown tag (it lives in KNOWN_STATIC_TAGS)', async () => {
+    const sys =
+      'claude.md\n'.repeat(400) +
+      '<types>\nstring\nnumber\n</types>\n' +
+      '<env>\nWorking directory: /tmp\n</env>';
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        model: 'claude',
+        messages: [{ role: 'user', content: 'hi' }],
+        system: sys,
+      }),
+    );
+    const { info } = await transformRequest(body);
+    // <types> is known-static; it should NOT show up as an unknown tag.
+    expect(info.unknownStaticTags).toBeUndefined();
+  });
+
   it('omits unknownStaticTags when the static slab has no tag-shaped blocks', async () => {
     const sys = 'claude.md\n'.repeat(400) + '<env>\nWorking directory: /tmp\n</env>';
     const body = new TextEncoder().encode(

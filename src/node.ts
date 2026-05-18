@@ -369,7 +369,7 @@ async function main(): Promise<void> {
       if (e.info?.unknownStaticTags && e.info.unknownStaticTags.length > 0) {
         console.warn(
           `[pixelpipe warn] unknown tag(s) in static slab: ${e.info.unknownStaticTags.join(', ')}  ` +
-            `— may need to add to DYNAMIC_BLOCK_TAGS in src/core/transform.ts`,
+            `— may need to add to DYNAMIC_BLOCK_TAGS (per-turn) or KNOWN_STATIC_TAGS (static) in src/core/transform.ts`,
         );
       }
 

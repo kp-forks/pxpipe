@@ -159,6 +159,20 @@ const DYNAMIC_BLOCK_TAGS = [
   'system-reminder',
 ] as const;
 
+/**
+ * Tag-shaped blocks that DO appear in the static slab and SHOULD be baked into
+ * the cached image. These are part of Claude Code's built-in system prompt /
+ * tool documentation, not per-turn injections, so they're stable across turns.
+ *
+ * The canary in splitStaticDynamic flags any tag-shaped block in the static
+ * slab that isn't in DYNAMIC_BLOCK_TAGS — designed to catch a new Claude Code
+ * release that ships a per-turn tag we'd accidentally cache. Without this
+ * allowlist, known-static tags like <types> trigger the canary on most turns
+ * and drown out the real signal. Add a tag here only after confirming it's
+ * static (appears in the cacheable part of the prompt, not rotated per turn).
+ */
+const KNOWN_STATIC_TAGS = ['types'] as const;
+
 function splitStaticDynamic(text: string): {
   staticText: string;
   dynamicText: string;
@@ -190,12 +204,14 @@ function splitStaticDynamic(text: string): {
   // collapse. Surfacing the tag name as telemetry lets us detect that
   // within hours of a Claude Code release.
   const known = new Set<string>(DYNAMIC_BLOCK_TAGS);
+  const knownStatic = new Set<string>(KNOWN_STATIC_TAGS);
   const sniffer = /<([a-zA-Z][a-zA-Z0-9_-]*)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g;
   const unknown = new Set<string>();
   let s: RegExpExecArray | null;
   while ((s = sniffer.exec(staticBuf)) !== null) {
     const tag = s[1]!;
-    if (!known.has(tag) && tag.length <= 64) unknown.add(tag);
+    if (!known.has(tag) && !knownStatic.has(tag) && tag.length <= 64)
+      unknown.add(tag);
   }
 
   return {
