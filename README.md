@@ -5,9 +5,15 @@
 A proxy for Claude Code that intercepts `POST /v1/messages` and renders
 the bulky static inputs (system prompt + tool docs + closed-prefix
 history) as grayscale PNGs, letting Opus 4.7's vision stack OCR them on
-the way in. Same information, ~76% fewer tokens, 100% reasoning quality
-preserved, byte-identical fixed text every turn for a clean prompt-cache
-hit.
+the way in. The hypothesis: pixels are a denser encoding for the same
+information.
+
+> **Status:** research / experimental. Pixelpipe demonstrably ships
+> fewer input tokens on cold-miss requests (measured by Anthropic's own
+> `count_tokens` endpoint). Whether that translates into a real
+> end-to-end dollar saving on a multi-turn session depends on cache
+> behavior, output / thinking tokens, and break-even math we are still
+> measuring. We don't currently make a "$ saved" claim.
 
 **Opus 4.7 only.** Pre-4.7 vision wasn't accurate enough on dense
 monospace glyphs — OCR errors would corrupt the prompt before the model
@@ -44,11 +50,12 @@ conversation history as designed timelines, tables as actual tables.
 Concatenating text is how 2024-era prompt engineering works; designing a
 visual surface is what context-as-UI looks like.
 
-One measured cold-miss event in `events.jsonl` went from **173,783**
-input tokens (what Anthropic's `count_tokens` endpoint measures on the
-unproxied body) to **41,321** `cache_create` tokens — a **~76% denser
-encoding of the same information**, with 100% reasoning quality preserved
-and byte-identical fixed text every turn for a clean prompt-cache hit.
+On one measured cold-miss request in `events.jsonl`, Anthropic's
+`count_tokens` reported **173,783** input tokens for the unproxied body
+and **41,321** `cache_create` tokens for the proxied body — a ~76%
+reduction in tokens shipped on that single request. That's an
+*encoding-density* observation about one request, not an aggregate
+$-savings claim. See "How we report numbers" below for the difference.
 
 ## What this is NOT
 
@@ -149,12 +156,12 @@ Rates from [Anthropic's pricing page](https://www.anthropic.com/pricing)
 for Opus 4.7 (input pricing has been flat across 4.5/4.6/4.7). Image
 tokens are billed at the input rate.
 
-| line item            | rate          |
-| -------------------- | ------------- |
-| input                | $5.00 / MTok  |
-| output               | $25.00 / MTok |
-| cache_create (5 min) | $6.25 / MTok  |
-| cache_read           | $0.50 / MTok  |
+| line item            | rate           |
+| -------------------- | -------------- |
+| input                | $2.50 / MTok   |
+| output               | $12.50 / MTok  |
+| cache_create (5 min) | $3.125 / MTok  |
+| cache_read           | $0.25 / MTok   |
 
 ### Worked example — one real cold-miss event
 
@@ -180,16 +187,33 @@ cache_create_tokens        111    only the per-turn dynamic delta
 cache_read_tokens      140,786    paid at 0.1× the input rate
 ```
 
-The cold-miss savings are large because the proxy shrinks what gets
-cached. Warm-hit savings look small in tokens but are actually larger in
-dollars because the 132k-token delta avoids the 1.25× cache_create
-premium and instead pays the 0.1× cache_read price.
-
-| metric                       | original | via proxy | savings  |
+| metric                       | original | via proxy | delta    |
 | ---------------------------- | -------- | --------- | -------- |
-| Cold input tokens (per call) | ~174k    | ~41k      | ~76%     |
-| Cache-warm input tokens      | ~169k    | ~141k     | ~17%     |
+| Cold input tokens (per call) | ~174k    | ~41k      | ~76% fewer |
+| Cache-warm input tokens      | ~169k    | ~141k     | ~17% fewer |
 | Per-image OCR quality vs txt | -        | -         | ~99.5%   |
+
+These are per-request token-count deltas, not a session-level cost
+claim. A real session interleaves cold-miss and cache-warm calls,
+includes output / thinking tokens we don't touch, and depends on cache
+TTL and Claude Code's usage shape — none of which a single-request
+delta captures.
+
+### How we report numbers
+
+Pixelpipe instruments every proxied request with two free
+`count_tokens` probes on the original uncompressed body — one full,
+one truncated at the last cache marker — and persists them alongside
+Anthropic's billing `usage` block. The bundled dashboard uses those
+to show **token deltas per request** and **aggregate token counts**,
+and refuses to display a "$ saved" headline unless both probes
+succeeded *and* the host has wired in pricing. On real traffic to
+date, the honest aggregate is closer to break-even than the
+cold-miss number above suggests; the value proposition is still
+under measurement.
+
+If you see a "$ saved" number coming out of a host integration that
+doesn't expose this gating, treat it as marketing, not measurement.
 
 ---
 
