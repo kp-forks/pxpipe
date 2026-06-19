@@ -230,7 +230,7 @@ for the lossy limitation below. Runtime is pure-JS (Node and edge/Workers);
 ## Development
 
 ```bash
-pnpm install && pnpm test     # 354 tests
+pnpm install && pnpm test     # 376 tests
 pnpm run build                # regenerates dist/
 ```
 

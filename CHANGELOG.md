@@ -4,6 +4,52 @@ All notable changes to pxpipe are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) (pre-1.0: minor = features /
 behavioral changes, patch = fixes).
 
+## 0.4.0 — 2026-06-19
+
+New library surface for harness authors, opt-in GPT-5.x / Responses API support,
+and a round of dashboard-honesty and cache-correctness fixes.
+
+### Added
+- **Library API (`pxpipe/transform`):** `transformAnthropicMessages` now accepts
+  `keepSharp` (pin specific blocks as text so the caller controls what stays
+  legible) and `emitRecoverable` (a provenance-recovery channel surfaced on
+  `info.recoverable`). New exported types `KeepSharpBlock`, `RecoverableBlock`.
+- **Edge / Workers-safe packaging.** `process.env` access is `typeof`-guarded;
+  `@napi-rs/canvas` moved to `devDependencies` (the atlas is baked at build time),
+  so the runtime is pure-JS and runs on Node and Cloudflare Workers unchanged.
+- **GPT-5.x family + Responses API (opt-in, off by default).** `isPxpipeSupportedGptModel`
+  gates the `gpt-5`/`5.5`/`5.6`/`-mini`/`-nano` family; a 768 px portrait-strip
+  render profile avoids OpenAI's mandatory shortest-side-768 downscale; an OpenAI
+  vision-token cost model replaces the Anthropic 750 px/token math for the GPT
+  path; `transformOpenAIResponses` compresses `/v1/responses` (Codex). Still gated
+  off until the day-one OCR-fidelity eval on a released GPT-5.x model.
+
+### Fixed
+- **Cache anchor relocation.** The single cache breakpoint moved from the static
+  slab onto the **last history image** (which sits after the slab in prefix order),
+  so slab + history cache as one stable prefix — created once, then read at 0.1×.
+  Previously the ~141k-token history image re-created at the 1.25× rate on warm
+  turns, turning a real compression win into a net loss. Marker count is
+  unchanged: pxpipe still never *adds* a breakpoint, only relocates the caller's.
+- **Dashboard honesty.** The Details headline and the session hero now use
+  cache-weighted tokens (matching the Saved column) instead of dividing the raw
+  `count_tokens` baseline by sent tokens — which over-claimed "fewer tokens" even
+  on requests that were a net loss after caching.
+- **Restart restore.** Replayed rows now reconstruct the Saved delta and the
+  Details breakdown from the persisted JSONL; image thumbnails are honestly marked
+  expired rather than left blank.
+- **CI:** regenerated `pnpm-lock.yaml` after the canvas dependency move
+  (`--frozen-lockfile` had been rejecting every push).
+- **Node:** clean exit on Ctrl+C during in-flight streams and idle keep-alive.
+
+### Changed
+- **Dashboard redesign:** light flame theme, plain-language hero, and per-request
+  image-vs-text transparency (which context became an image, which stayed text).
+- **Docs:** lead with token reduction rather than dollar savings (pricing is a
+  side-effect of tokens saved); added `HISTORY_CACHE_MODEL.md`; large comment
+  cleanup across the core (~1,640 lines trimmed) with deep math moved to docs.
+- **Deps:** patched 6 advisories (vite, undici, esbuild).
+
 ## 0.3.1 — 2026-06-17
 
 ### Changed
