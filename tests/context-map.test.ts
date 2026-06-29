@@ -14,7 +14,12 @@
  * 0.1× while the image was re-created cold).
  */
 import { describe, it, expect } from 'vitest';
-import { renderContextMapFragment, type ContextMapData } from '../src/dashboard/fragments.js';
+import {
+  renderContextMapFragment,
+  renderRecentFragment,
+  type ContextMapData,
+} from '../src/dashboard/fragments.js';
+import type { RecentPayload } from '../src/dashboard/types.js';
 
 function ctx(p: Partial<ContextMapData> = {}): ContextMapData {
   return {
@@ -87,7 +92,7 @@ describe('renderContextMapFragment — cache-aware headline', () => {
       ctx({ haveBaseline: false, baselineInputEff: 0, actualInputEff: 1800, baselineTokens: 7500, realInput: 1800 }),
       [],
     );
-    expect(html).toContain('billed tokens sent');
+    expect(html).toContain('billing-equivalent input tokens sent');
     expect(html).not.toContain('% smaller');
     expect(html).not.toContain('% bigger');
     expect(html).toContain('no trustworthy text baseline');
@@ -115,7 +120,7 @@ describe('renderContextMapFragment — cold vs warm honesty', () => {
     // headline: a real saving is still shown…
     expect(html).toContain('smaller');
     // …but the text side is plain "text", never "cached text".
-    expect(html).toContain('billed tokens as text became');
+    expect(html).toContain('text would bill as');
     expect(html).not.toContain('as cached text');
     // sub-line tells the truth about the cold turn instead of inventing 0.1×.
     expect(html).toContain('No warm text cache this turn');
@@ -135,7 +140,7 @@ describe('renderContextMapFragment — cold vs warm honesty', () => {
       [],
     );
     expect(html).toContain('smaller');
-    expect(html).toContain('as cached text became');
+    expect(html).toContain('cached text would bill as');
     expect(html).toContain('after cache discounts (reads at 0.1×), same basis as the Saved column');
     expect(html).not.toContain('No warm text cache this turn');
   });
@@ -155,7 +160,7 @@ describe('renderContextMapFragment — cold vs warm honesty', () => {
       [],
     );
     expect(html).toContain('bigger');
-    expect(html).toContain('if kept as text');
+    expect(html).toContain('for text');
     expect(html).not.toContain('as cached text');
     expect(html).toContain('No warm text cache this turn');
     expect(html).not.toContain('cheap cache-read');
@@ -182,11 +187,38 @@ describe('renderContextMapFragment — cold vs warm honesty', () => {
     );
     // Honest loss in the headline, against the WARM ("cached text") basis.
     expect(html).toContain('bigger');
-    expect(html).toContain('if kept as cached text');
+    expect(html).toContain('for cached text');
     // The image-busted explanation — text warm, image cold, loss surfaced.
     expect(html).toContain('re-imaged the prefix and missed the image cache');
     expect(html).toContain('the text would have read warm');
     // It is NOT the cold branch: the text really was warm this turn.
     expect(html).not.toContain('No warm text cache this turn');
+  });
+});
+
+describe('renderRecentFragment — billed delta presentation', () => {
+  it('shows negative saved deltas instead of hiding imaging losses as missing data', () => {
+    const html = renderRecentFragment({
+      recent: [
+        {
+          ts: 0,
+          method: 'POST',
+          path: '/v1/messages',
+          status: 200,
+          compressed: true,
+          cc_added: 1,
+          cache_read: 0,
+          baseline_input: 7618,
+          actual_input: 69526,
+          session_saved_so_far_delta: -61908,
+        },
+      ],
+      has_preview: false,
+      preview_meta: '',
+    } satisfies RecentPayload);
+
+    expect(html).toContain('Saved/lost');
+    expect(html).toContain('class="num neg">-61,908</td>');
+    expect(html).not.toContain('class="num pos">—</td>');
   });
 });

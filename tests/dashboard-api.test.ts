@@ -376,6 +376,7 @@ describe('union warmth: fresh wall-clock prior OR cr>0 (no phantom savings, no h
     },
     cacheable: number,
     sid = 'warmsess',
+    systemSha8 = 'stable-system',
   ): unknown {
     return {
       ts: '2026-05-19T00:00:00Z',
@@ -388,6 +389,7 @@ describe('union warmth: fresh wall-clock prior OR cr>0 (no phantom savings, no h
       info: {
         compressed: true,
         firstUserSha8: sid,
+        systemSha8,
         baselineProbeStatus: 'ok',
         baselineTokens: 30000, // text counterfactual: full prefix + tail
         baselineCacheableTokens: cacheable, // prefix up to the cache_control marker
@@ -444,6 +446,43 @@ describe('union warmth: fresh wall-clock prior OR cr>0 (no phantom savings, no h
     // surfaces it — not floored, not hidden behind a matching cold baseline.
     expect(miss.session_saved_so_far_delta).toBe(-13100);
     expect(miss.session_saved_so_far_delta!).toBeLessThan(0);
+  });
+
+  it('prices text cold when the static prefix hash changed inside the TTL', async () => {
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 20000,
+        },
+        20000,
+        'hashsess',
+        'old-system',
+      ) as never,
+    );
+
+    dash.update(
+      antEvt(
+        {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20000,
+          cache_read_input_tokens: 0,
+        },
+        20000,
+        'hashsess',
+        'new-system',
+      ) as never,
+    );
+
+    const recent = (await dash.serveRecent().json()) as RecentPayload;
+    const changed = recent.recent.at(-1)!;
+    // Static prefix changed, so the text-only path would create too:
+    // baseline = 20000*1.25 + 10000 tail = 35000, not warm 12000.
+    expect(changed.baseline_input).toBe(35000);
+    expect(changed.session_saved_so_far_delta).toBe(9900);
   });
 
   it('still prices a genuine warm turn warm (cr>0 reads the prefix cheaply)', async () => {

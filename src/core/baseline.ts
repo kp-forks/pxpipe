@@ -18,6 +18,9 @@ export interface BaselineWarmthPrev {
   ts: number;
   /** Cacheable-prefix tokens measured that turn (0 if the probe missed). */
   cacheable: number;
+  /** Hash of the image-bound/static text prefix. If it changes, the text prefix
+   *  was not the same cache entry even inside the TTL. */
+  prefixSha?: string;
 }
 
 /**
@@ -41,9 +44,11 @@ export interface BaselineWarmthPrev {
  *      yet cr proves warmth). Without it that turn is priced COLD and fabricates
  *      an inflated "saved" row — the operator's original reported bug.
  *
- * Crucially, cr === 0 does NOT force cold (leg 1 carries those turns); cr is only
- * an ADDITIONAL sufficient witness, never a necessary one. That is the whole
- * difference from the old rule. See docs/CACHING_AND_SAVINGS.md.
+ * Crucially, cr === 0 does NOT force cold when the prefix hash is unchanged
+ * (leg 1 carries those turns); cr is only an ADDITIONAL sufficient witness,
+ * never a necessary one. But a fresh prior with a different prefix hash is cold:
+ * it is a different provider cache key, not an append-only continuation.
+ * See docs/CACHING_AND_SAVINGS.md.
  *
  * @param prev       this session's previous usage-bearing turn, or undefined.
  * @param nowSec     wall-clock seconds of the current turn (replay passes the
@@ -52,6 +57,9 @@ export interface BaselineWarmthPrev {
  *                   when warm only via cr, since cr proves a read but not the split).
  * @param cr         observed cache-read tokens this turn (the leg-2 witness).
  * @param ttlSec     cache TTL window (defaults to CACHE_TTL_SEC).
+ * @param prefixSha  stable-prefix fingerprint for the text counterfactual. A
+ *                   fresh wall-clock prior only proves warmth when this matches
+ *                   the prior turn; otherwise the provider would see a new key.
  */
 export function deriveBaselineWarmth(
   prev: BaselineWarmthPrev | undefined,
@@ -59,10 +67,15 @@ export function deriveBaselineWarmth(
   cacheable: number,
   cr: number,
   ttlSec: number = CACHE_TTL_SEC,
+  prefixSha?: string,
 ): { warm: boolean; prevCacheable: number } {
   const age = prev !== undefined ? nowSec - prev.ts : Number.POSITIVE_INFINITY;
+  const samePrefix = prev === undefined
+    || prev.prefixSha === undefined
+    || prefixSha === undefined
+    || prev.prefixSha === prefixSha;
   // Leg 1: a fresh same-session prior within the TTL (wall-clock warmth).
-  const freshPrior = prev !== undefined && age >= 0 && age < ttlSec;
+  const freshPrior = prev !== undefined && age >= 0 && age < ttlSec && samePrefix;
   // Leg 2: an observed read directly witnesses a warm cache. Union of the two.
   const warm = freshPrior || cr > 0;
   // Fresh prior → credit its real measured prefix as reused (the reused/grown

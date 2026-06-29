@@ -79,7 +79,11 @@ describe('computeBaselineInputEff (warmth-aware)', () => {
  * prior yet. The old rule used cr ALONE (cr necessary), which mispriced both.
  */
 describe('deriveBaselineWarmth (honest union: fresh prior in TTL OR cr>0)', () => {
-  const prev = (ts: number, cacheable: number) => ({ ts, cacheable });
+  const prev = (ts: number, cacheable: number, prefixSha?: string) => ({
+    ts,
+    cacheable,
+    ...(prefixSha !== undefined ? { prefixSha } : {}),
+  });
 
   it('cold when there is no prior and no observed read', () => {
     expect(deriveBaselineWarmth(undefined, 1000, 5000, 0)).toEqual({ warm: false, prevCacheable: 0 });
@@ -96,6 +100,22 @@ describe('deriveBaselineWarmth (honest union: fresh prior in TTL OR cr>0)', () =
     // 60s since the last turn, image cache missed (cr=0) — text prefix is still
     // cached. The old cr-alone rule returned cold here and fabricated savings.
     expect(deriveBaselineWarmth(prev(1000, 8000), 1060, 5000, 0)).toEqual({
+      warm: true,
+      prevCacheable: 8000,
+    });
+  });
+
+  it('cold when the fresh prior has a different static-prefix hash', () => {
+    // Same session + inside TTL is not enough: if the system/tool prefix changed,
+    // the text-only request would use a different prompt-cache key too.
+    expect(deriveBaselineWarmth(prev(1000, 8000, 'old'), 1060, 5000, 0, CACHE_TTL_SEC, 'new')).toEqual({
+      warm: false,
+      prevCacheable: 0,
+    });
+  });
+
+  it('keeps the fresh-prior warmth when the static-prefix hash matches', () => {
+    expect(deriveBaselineWarmth(prev(1000, 8000, 'same'), 1060, 5000, 0, CACHE_TTL_SEC, 'same')).toEqual({
       warm: true,
       prevCacheable: 8000,
     });

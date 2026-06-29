@@ -429,7 +429,7 @@ export class DashboardState {
    *  TTL), which decides whether the text counterfactual reads (0.10×) or
    *  re-creates (1.25×) its prefix. Reconstructed identically in replay() from
    *  persisted `ts`, so live and restored numbers agree. Capped with sessions. */
-  private baselineWarmth: Map<string, { ts: number; cacheable: number }> = new Map();
+  private baselineWarmth: Map<string, { ts: number; cacheable: number; prefixSha?: string }> = new Map();
   /** Anthropic prompt-cache TTL in seconds; a gap beyond this is a cold turn. */
   private static readonly CACHE_TTL_SEC = 300;
   /** Hard cap on `sessions` Map entries. Keeps memory bounded in
@@ -657,26 +657,26 @@ export class DashboardState {
       // turn)? Decides whether the text counterfactual reads or re-creates. Keyed
       // by firstUserSha8; live uses the wall clock, replay() the persisted ts.
       const sidNow = info?.firstUserSha8;
+      const prefixShaNow = info?.systemSha8;
       const nowSec = Date.now() / 1000;
       const warmthPrev =
         typeof sidNow === 'string' && sidNow.length > 0
           ? this.baselineWarmth.get(sidNow)
           : undefined;
       // Warmth = honest UNION of two witnesses the TEXT prefix was cached: a
-      // fresh same-session prior within the TTL (wall clock) OR cr>0 (an observed
-      // read). The text prefix is append-only, so a fresh prior keeps it warm
-      // even when pxpipe busts its OWN image cache on a cr=0 re-render (the case
-      // the old cr-alone rule mispriced cold, fabricating savings); and cr>0
-      // rescues the first post-restart turn that has no in-memory prior yet (the
-      // case cr-alone got right but wall-clock-alone would misprice cold,
-      // fabricating the inflated "saved" row). Centralised in deriveBaselineWarmth
-      // so update()/replay()/sessions can't drift apart. See docs.
+      // fresh same-session prior within the TTL AND the same static-prefix hash,
+      // OR cr>0 (an observed read). The hash guard matters when opencode changes
+      // system/tool guidance mid-session: same wall clock, different cache key.
+      // cr>0 still rescues the first post-restart turn that has no in-memory
+      // prior yet. Centralised in deriveBaselineWarmth so update()/replay()/
+      // sessions can't drift apart. See docs.
       const { warm, prevCacheable } = deriveBaselineWarmth(
         warmthPrev,
         nowSec,
         cacheable,
         cr,
         DashboardState.CACHE_TTL_SEC,
+        prefixShaNow,
       );
       baselineInputEff = creditSaving
         ? computeBaselineInputEff(
@@ -696,6 +696,7 @@ export class DashboardState {
         this.baselineWarmth.set(sidNow, {
           ts: nowSec,
           cacheable: cacheable > 0 ? cacheable : (warmthPrev?.cacheable ?? 0),
+          prefixSha: prefixShaNow ?? warmthPrev?.prefixSha,
         });
         if (this.baselineWarmth.size > DashboardState.SESSION_CAP) {
           const firstKey = this.baselineWarmth.keys().next().value;
@@ -972,19 +973,20 @@ export class DashboardState {
         // Cache-aware warmth, reconstructed from persisted ts so replay matches
         // the live update() path (see baselineWarmth field + update()).
         const sidR = (t as { first_user_sha8?: string }).first_user_sha8;
+        const prefixShaR = (t as { system_sha8?: string }).system_sha8;
         const tsSec = Date.parse(t.ts) / 1000;
         const warmthPrevR =
           typeof sidR === 'string' && sidR.length > 0 ? this.baselineWarmth.get(sidR) : undefined;
         // Same union warmth as update() (persisted ts instead of the live clock
-        // so replay reproduces live numbers exactly): fresh wall-clock prior OR
-        // cr>0. A cache-busted re-render within the TTL stays warm via the prior;
-        // a post-restart turn stays warm via cr. See deriveBaselineWarmth.
+        // so replay reproduces live numbers exactly): matching-hash fresh prior
+        // OR cr>0. See deriveBaselineWarmth.
         const { warm: warmR, prevCacheable: prevCacheableR } = deriveBaselineWarmth(
           warmthPrevR,
           tsSec,
           cacheable,
           cr,
           DashboardState.CACHE_TTL_SEC,
+          prefixShaR,
         );
         baselineInputEff = creditSaving
           ? computeBaselineInputEff(
@@ -1001,6 +1003,7 @@ export class DashboardState {
           this.baselineWarmth.set(sidR, {
             ts: tsSec,
             cacheable: cacheable > 0 ? cacheable : (warmthPrevR?.cacheable ?? 0),
+            prefixSha: prefixShaR ?? warmthPrevR?.prefixSha,
           });
           if (this.baselineWarmth.size > DashboardState.SESSION_CAP) {
             const firstKey = this.baselineWarmth.keys().next().value;

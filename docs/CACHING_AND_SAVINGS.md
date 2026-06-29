@@ -277,24 +277,29 @@ So the baseline is **warmth-aware**, and warmth is the honest **union of two
 independent witnesses** that the *text* prefix was cached this turn — warm iff
 EITHER fires:
 
-1. **Wall clock** — the same session had a usage-bearing turn **less than
-   `CACHE_TTL_SEC` (300s) ago**. The text counterfactual is a *separate*
-   hypothetical client whose prefix is **append-only**, so a recent prior turn
-   proves that prefix is still cached on Anthropic's side **even when pxpipe
-   busted its OWN image cache** (`cr = 0`) by re-rendering the prefix in place
-   this turn. The text's cache fate is **not** tied to the image's: pricing it
-   warm here correctly *surfaces* the re-imaging loss (cheap warm text < the
-   imaged actual) instead of hiding it behind a matching cold baseline.
+1. **Wall clock + same static prefix** — the same session had a usage-bearing
+   turn **less than `CACHE_TTL_SEC` (300s) ago**, and the static-prefix hash
+   (`system_sha8`) matches. The text counterfactual is a *separate* hypothetical
+   client whose prefix is **append-only**, so a recent matching prior turn proves
+   that prefix is still cached on Anthropic's side **even when pxpipe busted its
+   OWN image cache** (`cr = 0`) by re-rendering the prefix in place this turn.
+   The text's cache fate is **not** tied to the image's: pricing it warm here
+   correctly *surfaces* the re-imaging loss (cheap warm text < the imaged actual)
+   instead of hiding it behind a matching cold baseline. If `system_sha8`
+   changed, this is a different provider cache key, so the prior does not prove
+   warmth.
 2. **Observed read** — `cache_read > 0` directly witnesses Anthropic serving a
    cached prefix this turn. This rescues the **first turn after a restart / TTL /
    `SESSION_CAP` eviction**, where this process has no in-memory prior yet but the
    cache is provably warm.
 
-`cr = 0` does **not** force cold — leg 1 carries cache-busted re-renders within
-the window. `cr` is only an *additional* sufficient witness, never a necessary
-one. That is the entire difference from the old `cr > 0`-only rule, which treated
-image and text as one shared cache slot and so mispriced cache-busted re-renders
-**cold**, hiding a real loss (see the audit history below).
+`cr = 0` does **not** force cold when the static-prefix hash is unchanged — leg 1
+carries cache-busted re-renders within the window. `cr` is only an *additional*
+sufficient witness, never a necessary one. A fresh prior with a different
+`system_sha8` is cold unless `cr > 0` independently proves a read. That is the
+entire difference from the old `cr > 0`-only rule, which treated image and text
+as one shared cache slot and so mispriced cache-busted re-renders **cold**, hiding
+a real loss (see the audit history below).
 
 ```
 cacheable = min(baselineCacheable, baseline)   // the would-have-cached prefix
@@ -305,8 +310,8 @@ Then price `cacheable` by warmth:
 
 | case | condition | how the text path is billed |
 |---|---|---|
-| **cold turn** | no fresh prior **and** `cr = 0` (first turn, or a >300s gap that let the entry expire with no observed read) | `cacheable × 1.25  +  coldTail × 1.0` |
-| **warm turn** | fresh same-session prior <300s ago **OR** `cr > 0` (the union) | `reused × 0.10  +  grown × 1.25  +  coldTail × 1.0` |
+| **cold turn** | no matching fresh prior **and** `cr = 0` (first turn, a `system_sha8` change, or a >300s gap that let the entry expire with no observed read) | `cacheable × 1.25  +  coldTail × 1.0` |
+| **warm turn** | fresh same-session prior <300s ago with matching `system_sha8` **OR** `cr > 0` (the union) | `reused × 0.10  +  grown × 1.25  +  coldTail × 1.0` |
 
 where, on a warm turn:
 
@@ -330,11 +335,11 @@ it never would have paid.
 > **Signature note.**
 > `computeBaselineInputEff(baseline, baselineCacheable, inputTokens, cc, cr, warm, prevCacheable)`.
 > The `warm` flag and `prevCacheable` are produced by **`deriveBaselineWarmth`**
-> (the union: `warm = freshPrior(<300s) || cr > 0`) at every call site — including
-> the dashboard/sessions replay path, which passes the **persisted** timestamp so
-> it reproduces the live decision exactly. Once warm, the magnitude of the read is
-> driven by `prevCacheable` (how much prefix carried over), not by the raw `cr`
-> count.
+> (the union: `warm = freshPrior(<300s, matching system_sha8) || cr > 0`) at every
+> call site — including the dashboard/sessions replay path, which passes the
+> **persisted** timestamp and `system_sha8` so it reproduces the live decision
+> exactly. Once warm, the magnitude of the read is driven by `prevCacheable` (how
+> much prefix carried over), not by the raw `cr` count.
 
 Two guard rails short-circuit before the warmth split:
 
@@ -368,15 +373,18 @@ Two guard rails short-circuit before the warmth split:
 >      prefix was still cached. Pricing it cold gave the baseline a matching cold
 >      create, so the row showed ≈0 — **hiding a real re-imaging loss** (the
 >      inverse of the (2) phantom-saving bug).
-> 4. Both of (3) are fixed by the **union**: `warm = freshPrior(<300s) || cr > 0`.
->    Leg 1 (wall clock) prices cache-busted re-renders warm so the loss surfaces;
->    leg 2 (`cr`) rescues the no-prior post-restart turn. The text counterfactual
->    is a *separate* append-only client — its cache fate is decoupled from whether
->    pxpipe busted its own image cache.
+> 4. Both of (3) are fixed by the **union**: `warm = freshPrior(<300s, matching
+>    system_sha8) || cr > 0`. Leg 1 (wall clock plus same static-prefix hash)
+>    prices cache-busted re-renders warm so the loss surfaces; leg 2 (`cr`) rescues
+>    the no-prior post-restart turn. The text counterfactual is a *separate*
+>    append-only client — its cache fate is decoupled from whether pxpipe busted
+>    its own image cache. If `system_sha8` changed, that is not an append-only
+>    continuation, so the text counterfactual is cold too unless `cr > 0` proves a
+>    read.
 >
 > The current model does all of it: split the prefix, gate the read rate on real
-> warmth, and take the **union** of the wall-clock prior and the observed read so
-> neither a phantom saving (2) nor a hidden loss (3) can return.
+> warmth, and take the **union** of the matching-hash wall-clock prior and the
+> observed read so neither a phantom saving (2) nor a hidden loss (3) can return.
 > `tests/baseline.test.ts` locks `cold(prefix) > warm(prefix)` and the union truth
 > table; `tests/dashboard-api.test.ts` and the sessions replay tests lock both the
 > cache-busted-re-render-within-TTL case (warm text, cold image, **loss surfaced**)
@@ -426,13 +434,14 @@ reads **3,000 image tokens** at 0.1× where the text arm reads **27,000** — 9�
 fewer tokens sitting under the same discount. That reduction, not the cache
 discount, is what pxpipe is credited with.
 
-**(b) Cold turn (first turn or a >5-min idle).** Same body, but *genuinely* no
-warm cache for either path — no fresh same-session prior **and** `cr = 0`. The
-imaged request creates its ~3,000-token image prefix cold: `input_tokens = 2000`,
-`cc = 3000`, `cr = 0`. Both legs of the union fail, so the text counterfactual is
-priced cold too: it would equally have re-created its prefix. (`cr = 0` *alone*
-is not the tell — a `cr = 0` turn that sits <300s after a prior is warm via leg 1;
-that's case (c).)
+**(b) Cold turn (first turn, changed static prefix, or a >5-min idle).** Same
+body, but *genuinely* no warm cache for either path — no fresh same-session prior
+with matching `system_sha8` **and** `cr = 0`. The imaged request creates its
+~3,000-token image prefix cold: `input_tokens = 2000`, `cc = 3000`, `cr = 0`.
+Both legs of the union fail, so the text counterfactual is priced cold too: it
+would equally have re-created its prefix. (`cr = 0` *alone* is not the tell — a
+`cr = 0` turn that sits <300s after a matching prior is warm via leg 1; that's
+case (c).)
 
 ```
 Counterfactual (text, cold):
@@ -453,17 +462,18 @@ create; the image path eats only `3000×1.25`.
 > always read the prefix at `28000×0.10 = 2,800` → `baseline_eff = 4,800`, then
 > subtracted the real `actual_eff = 5,750` for a **−950 "loss"** on a turn that
 > actually saved 31,250. The union prices it cold the *honest* way — both legs
-> fail (no fresh prior **and** `cr = 0`), so the text path re-creates its prefix
-> at 1.25× exactly as the imaged path does, and the phantom loss is gone. A
-> `cr = 0` turn that *does* sit <300s after a prior is the opposite animal: leg 1
-> fires, the text is warm, and pricing it cold would hide a loss — that's (c).
+> fail (no matching fresh prior **and** `cr = 0`), so the text path re-creates its
+> prefix at 1.25× exactly as the imaged path does, and the phantom loss is gone.
+> A `cr = 0` turn that *does* sit <300s after a matching prior is the opposite
+> animal: leg 1 fires, the text is warm, and pricing it cold would hide a loss —
+> that's (c).
 
 **(c) Cache-busted re-render inside the window (warm text, cold image).** The
 *identical* actual request to (b) — `input_tokens = 2000`, `cc = 3000`, `cr = 0`
 (pxpipe re-rendered the image prefix in place, so its own image cache missed) —
-but this turn lands <300s after a prior that cached a 27,000-token prefix
-(`prevCacheable = 27000`, grown 1,000). Leg 1 fires, so the text counterfactual is
-**warm** even though `cr = 0`:
+but this turn lands <300s after a prior with the same `system_sha8` that cached a
+27,000-token prefix (`prevCacheable = 27000`, grown 1,000). Leg 1 fires, so the
+text counterfactual is **warm** even though `cr = 0`:
 
 ```
 Counterfactual (text, warm — leg 1, prefix was cached regardless of the image):
@@ -505,7 +515,8 @@ Every row in `~/.pxpipe/events.jsonl` carries both arms of the same request.
   `cache_control` marker (omitted/`0` if the body had no markers)
 - `first_user_sha8` — the **session key**. Rows sharing this value are the same
   conversation; warmth comes from `deriveBaselineWarmth` over consecutive rows
-  that share it — a fresh prior within the 300s TTL **or** an observed `cr > 0`.
+  that share it — a fresh prior within the 300s TTL with matching `system_sha8`,
+  **or** an observed `cr > 0`.
 - the billed `input_tokens`, `cache_create_tokens` (← Anthropic's
   `cache_creation_input_tokens`), and `cache_read_tokens` (← Anthropic's
   `cache_read_input_tokens`) from the real response. (A 1-hour cache tier, if
@@ -514,21 +525,25 @@ Every row in `~/.pxpipe/events.jsonl` carries both arms of the same request.
 Because warmth is a **cross-turn** property, replay isn't purely per-row: group
 rows by `first_user_sha8`, sort each group by `ts`, then walk each session in
 time order. For each row call
-`deriveBaselineWarmth(prev, ts, baseline_cacheable_tokens, cache_read_tokens)` —
-the exact function the live path uses — where `prev` is the previous in-session
-row (or `undefined` for the first). It returns `{ warm, prevCacheable }` via the
-**union**: warm iff a fresh same-session prior exists within the 300s TTL **or**
+`deriveBaselineWarmth(prev, ts, baseline_cacheable_tokens, cache_read_tokens,
+CACHE_TTL_SEC, system_sha8)` — the exact function the live path uses — where
+`prev` is the previous in-session row (or `undefined` for the first). It returns
+`{ warm, prevCacheable }` via the **union**: warm iff a fresh same-session prior
+exists within the 300s TTL with matching `system_sha8` **or**
 `cache_read_tokens > 0`. So a post-restart row with no in-session prior but
-`cr > 0` still prices warm, and a `cr = 0` re-render <300s after a prior still
-prices warm — neither falls through to cold. (`prevCacheable` follows: the prior
-row's `baseline_cacheable_tokens` when the fresh-prior leg fired, else this row's
-own `cacheable` when warm via `cr` alone, else `0`.) Feed `(baseline_tokens,
+`cr > 0` still prices warm, and a `cr = 0` re-render <300s after a matching prior
+still prices warm — neither falls through to cold. A `cr = 0` row after a
+`system_sha8` change is cold because the text counterfactual has a different
+provider cache key too. (`prevCacheable` follows: the prior row's
+`baseline_cacheable_tokens` when the fresh-prior leg fired, else this row's own
+`cacheable` when warm via `cr` alone, else `0`.) Feed `(baseline_tokens,
 baseline_cacheable_tokens, input_tokens, cache_create_tokens, cache_read_tokens,
 warm, prevCacheable)` through `computeBaselineInputEff` and the billed triple
 through `computeActualInputEff` (both exported from `src/core/baseline.ts`), sum
 the per-row differences, convert with the list ratios above, and you've re-derived
 the headline. The live dashboard (`DashboardState`) and the JSONL replay both call
-these **same functions** with the persisted `ts`, so the views can't drift.
+these **same functions** with the persisted `ts` and `system_sha8`, so the views
+can't drift.
 
 ### Edge cases worth knowing
 
@@ -566,8 +581,8 @@ cost over an expected reuse horizon. Savings are then measured by pricing
 body with the **same** cache rates (create 1.25×, read 0.1×) and the **same
 warmth** — the text counterfactual only reads its prefix cheaply on a turn where
 the cache genuinely existed for it (a fresh same-session prior within the 300s
-TTL, **or** an observed read `cr > 0`), and pays the create otherwise, exactly as
-the imaged path does. Because both arms face the
+TTL with matching `system_sha8`, **or** an observed read `cr > 0`), and pays the
+create otherwise, exactly as the imaged path does. Because both arms face the
 same discount under the same warmth, it cancels in the difference and what
 remains as "savings" is only the token reduction from turning dense text into
 images, never the prompt-caching discount itself.

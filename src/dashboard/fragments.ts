@@ -386,8 +386,10 @@ export function renderContextMapFragment(
   if (!c || (c.baselineTokens <= 0 && c.imageCount <= 0)) {
     return `<div class="ctxmap"><div class="empty-note">Pick <strong>Details</strong> on a request to see exactly which parts became images and which stayed as text.</div></div>`;
   }
-  // Cache-aware basis — identical to the recent row's As-text / Sent / Saved
-  // columns, so the two panels can never contradict each other. The raw
+  // Cache-aware billing-equivalent basis — identical to the recent row's
+  // As-text / Sent / Saved/lost columns. These are not raw token counts; they apply
+  // Anthropic's cache rates so create/read misses are visible in the comparison.
+  // The two panels can never contradict each other. The raw
   // count_tokens ratio is cache-blind: it over-states savings whenever the
   // prefix would have been a cheap cache-read, so it must NOT drive the
   // headline. It survives only as a clarifying sub-line below.
@@ -439,10 +441,10 @@ export function renderContextMapFragment(
   const rawPhrase =
     rawShrink >= 0 ? `Raw content shrank ${rawShrink}%.` : `Raw content grew ${-rawShrink}%.`;
   const headline = !showCompare
-    ? `<strong>${kFmt(c.actualInputEff || c.realInput)}</strong> billed tokens sent`
+    ? `<strong>${kFmt(c.actualInputEff || c.realInput)}</strong> billing-equivalent input tokens sent`
     : pct >= 0
-      ? `<span class="ctx-big">${pct}%</span> smaller — <strong>${kFmt(base)}</strong> billed tokens as ${textNoun} became <strong>${kFmt(real)}</strong> billed tokens as images`
-      : `<span class="ctx-big">${-pct}%</span> bigger — imaging cost <strong>${kFmt(real)}</strong> billed tokens vs <strong>${kFmt(base)}</strong> if kept as ${textNoun}`;
+      ? `<span class="ctx-big">${pct}%</span> smaller — ${textNoun} would bill as <strong>${kFmt(base)}</strong> input tokens; images billed as <strong>${kFmt(real)}</strong>`
+      : `<span class="ctx-big">${-pct}%</span> bigger — images billed as <strong>${kFmt(real)}</strong> input tokens vs <strong>${kFmt(base)}</strong> for ${textNoun}`;
   // Clarifying sub-line. It must match the turn's real cache state: claiming a
   // 0.1× read discount on a cold turn (where the prefix actually paid the 1.25×
   // create rate) — or, conversely, denying the text its warm read on a turn
@@ -502,7 +504,14 @@ export function renderRecentFragment(p: RecentPayload): string {
               viewId != null
                 ? `<a class="row-view" href="#" hx-get="/fragments/context-map?req=${viewId}" hx-target="#frag-context-map" hx-swap="innerHTML">Details →</a>`
                 : `<span class="muted">—</span>`;
-            const saved = e.session_saved_so_far_delta ?? 0;
+            const saved = e.session_saved_so_far_delta;
+            const savedCell = saved == null
+              ? `<td class="num muted">—</td>`
+              : saved > 0
+                ? `<td class="num pos">${numFmt(saved)}</td>`
+                : saved < 0
+                  ? `<td class="num neg">${numFmt(saved)}</td>`
+                  : `<td class="num">0</td>`;
             const imaged = e.cc_added
               ? `<span class="badge badge-img">image</span>`
               : `<span class="badge badge-txt">text</span>`;
@@ -516,7 +525,7 @@ export function renderRecentFragment(p: RecentPayload): string {
               `<td class="num">${e.cache_read != null ? numFmt(e.cache_read) : '—'}</td>` +
               `<td class="num">${e.baseline_input != null ? numFmt(e.baseline_input) : '—'}</td>` +
               `<td class="num">${e.actual_input != null ? numFmt(e.actual_input) : '—'}</td>` +
-              `<td class="num pos">${saved > 0 ? numFmt(saved) : '—'}</td>` +
+              savedCell +
               `<td class="num">${viewLink}</td>` +
               `</tr>`
             );
@@ -530,9 +539,9 @@ export function renderRecentFragment(p: RecentPayload): string {
     `<th>Model</th>` +
     `<th title="Was this request's context compressed into an image?">Sent as</th>` +
     `<th class="num" title="Tokens served from Claude's cache (cheap)">Cache hits</th>` +
-    `<th class="num" title="What this context would cost as plain text">As text</th>` +
-    `<th class="num" title="What we actually sent after imaging">Sent</th>` +
-    `<th class="num" title="Tokens saved on this request">Saved</th>` +
+    `<th class="num" title="Billing-equivalent input if kept as plain text, after cache create/read rates">As text</th>` +
+    `<th class="num" title="Actual billing-equivalent input after imaging, after cache create/read rates">Sent</th>` +
+    `<th class="num" title="As-text minus Sent; negative means imaging cost more">Saved/lost</th>` +
     `<th></th>` +
     `</tr></thead><tbody>${body}</tbody></table>`
   );
@@ -907,6 +916,7 @@ const CSS = `
   #frag-latest { overflow: auto; scrollbar-width: thin; }
   th.num, td.num { text-align: right; }
   td.pos { color: var(--good); font-weight: 600; }
+  td.neg { color: var(--bad); font-weight: 600; }
   .endp { color: var(--ink); font-family: var(--mono); font-size: 11px; }
   .empty-cell { color: var(--muted); text-align: center; padding: 18px; }
   .pill { display: inline-block; min-width: 38px; text-align: center; font-size: 11px; font-weight: 700;

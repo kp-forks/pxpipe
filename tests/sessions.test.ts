@@ -261,6 +261,42 @@ describe('aggregateSessions', () => {
     // The old cr-alone code booked the second turn as +31250 → a 62500 overclaim.
     expect(s.tokensSavedEst).toBe(30_300);
   });
+
+  it('does not treat a fresh prior as warm when the static prefix hash changed', async () => {
+    writeEvents(tmp, [
+      ev({
+        first_user_sha8: 'dddddddd',
+        ts: '2026-05-19T00:00:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 20_000,
+        system_sha8: 'old-system',
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_create_tokens: 0,
+        cache_read_tokens: 20_000,
+      }),
+      ev({
+        first_user_sha8: 'dddddddd',
+        ts: '2026-05-19T00:01:00.000Z',
+        compressed: true,
+        baseline_tokens: 30_000,
+        baseline_cacheable_tokens: 20_000,
+        system_sha8: 'new-system',
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_create_tokens: 20_000,
+        cache_read_tokens: 0,
+      }),
+    ]);
+    const { sessions } = await aggregateSessions(tmp);
+    const s = sessions.get('dddddddd')!;
+    // Turn 1: baseline full-reuse via cr = 20000*0.1 + 10000 = 12000;
+    // actual = 100 + 20000*0.1 = 2100; saved = 9900.
+    // Turn 2: static hash changed, so text is cold too: baseline = 35000;
+    // actual = 25100; saved = 9900. Old wall-clock-only warmth booked -13100.
+    expect(s.tokensSavedEst).toBe(19_800);
+  });
 });
 
 // ---- filter + list ---------------------------------------------------------

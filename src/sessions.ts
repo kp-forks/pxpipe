@@ -139,7 +139,7 @@ export async function aggregateSessions(
   // Per-session warmth for the cache-aware text counterfactual, reconstructed
   // from event ts as we scan in time order (mirrors DashboardState). Kept out
   // of SessionSummary so it never leaks into the /api/sessions.json shape.
-  const warmth = new Map<string, { ts: number; cacheable: number }>();
+  const warmth = new Map<string, { ts: number; cacheable: number; prefixSha?: string }>();
   const CACHE_TTL_SEC = 300;
 
   // Stat sidecar sizes once up front. Looking up size per event would be
@@ -196,14 +196,22 @@ export async function aggregateSessions(
       haveUsage
     ) {
       const cacheable = ev.baseline_cacheable_tokens ?? 0;
+      const prefixSha = ev.system_sha8;
       const tsSec = Date.parse(ev.ts) / 1000;
       const prev = warmth.get(id);
       // Warmth = honest union (mirrors dashboard.ts, centralised in
       // deriveBaselineWarmth): warm iff a fresh same-session prior is within the
-      // TTL OR cr>0 witnesses a read. cr=0 no longer forces cold (the wall-clock
-      // leg keeps a cache-busted re-render warm), and cr>0 rescues the first
-      // post-restart turn that has no in-memory prior yet.
-      const { warm, prevCacheable } = deriveBaselineWarmth(prev, tsSec, cacheable, cr, CACHE_TTL_SEC);
+      // TTL AND has the same static-prefix hash, OR cr>0 witnesses a read. cr=0
+      // no longer forces cold when the hash matches (cache-busted image re-render),
+      // and cr>0 rescues the first post-restart turn with no in-memory prior.
+      const { warm, prevCacheable } = deriveBaselineWarmth(
+        prev,
+        tsSec,
+        cacheable,
+        cr,
+        CACHE_TTL_SEC,
+        prefixSha,
+      );
       const baselineEff = computeBaselineInputEff(
         baseline,
         cacheable,
@@ -224,10 +232,12 @@ export async function aggregateSessions(
     if (haveUsage) {
       const tsSec = Date.parse(ev.ts) / 1000;
       const cacheable = ev.baseline_cacheable_tokens ?? 0;
+      const prefixSha = ev.system_sha8;
       const prev = warmth.get(id);
       warmth.set(id, {
         ts: tsSec,
         cacheable: cacheable > 0 ? cacheable : (prev?.cacheable ?? 0),
+        prefixSha: prefixSha ?? prev?.prefixSha,
       });
     }
     if (typeof ev.cache_read_tokens === 'number') {
