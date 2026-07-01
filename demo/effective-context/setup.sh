@@ -11,6 +11,7 @@ PORT_ON=47824          # pxpipe      -> b.sh (right)
 PORT_OFF=47823         # passthrough -> a.sh (left, plain but logged)
 LOG_ON="$HOME/.pxpipe/ec-on.jsonl"
 LOG_OFF="$HOME/.pxpipe/ec-off.jsonl"
+DUMP_DIR="/tmp/ec-png"   # pxpipe arm dumps every rendered PNG here for debug/inspection (wiped each run)
 # Model under test: defaults to Fable 5 — the production default, where Opus is
 # OFF. Pass a model as the first arg to ADD it to the proxy's compress scope:
 #   bash setup.sh           -> Fable only (Opus off, matches production)
@@ -44,8 +45,9 @@ ANSWER=$(node "$EC/generate.mjs" | tee /tmp/ec-gen.log | sed -n 's/^--- expected
 
 echo "[4/5] start proxies (background, fresh logs)"
 : >"$LOG_ON"; : >"$LOG_OFF"
-PXPIPE_LOG="$LOG_ON"  PORT="$PORT_ON"  PXPIPE_MODELS="$MODELS"                  nohup node dist/node.js >/tmp/ec-on.log  2>&1 & disown
-PXPIPE_LOG="$LOG_OFF" PORT="$PORT_OFF" PXPIPE_MODELS="$MODELS" PXPIPE_DISABLE=1 nohup node dist/node.js >/tmp/ec-off.log 2>&1 & disown
+rm -rf "$DUMP_DIR"; mkdir -p "$DUMP_DIR"   # fresh PNG dump for the pxpipe (compress) arm; the passthrough arm renders nothing
+PXPIPE_LOG="$LOG_ON"  PORT="$PORT_ON"  PXPIPE_MODELS="$MODELS" PXPIPE_DUMP_DIR="$DUMP_DIR" nohup node dist/node.js >/tmp/ec-on.log  2>&1 & disown
+PXPIPE_LOG="$LOG_OFF" PORT="$PORT_OFF" PXPIPE_MODELS="$MODELS" PXPIPE_DISABLE=1            nohup node dist/node.js >/tmp/ec-off.log 2>&1 & disown
 sleep 2
 
 echo "[5/5] seed two read-only working copies (context/ only)"
@@ -59,6 +61,7 @@ cat <<EOF
 Ready. Proxies up: pxpipe :$PORT_ON  ·  passthrough :$PORT_OFF
 Compress scope: $MODELS  (Opus is OFF by default — 'setup.sh opus' to include it; pass the SAME model to a.sh/b.sh)
 GROUND-TRUTH ANSWER: ${ANSWER:-see /tmp/ec-gen.log}   <- both columns should reply with exactly this
+Rendered PNGs (what the pxpipe model actually sees): $DUMP_DIR   (wiped + refilled each setup; passthrough arm renders none)
 
 In a browser, open the live dashboard (context/token reduction, updates as it reads):
   http://localhost:$PORT_ON     # pxpipe   -> "THIS SESSION — N% fewer tokens"

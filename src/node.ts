@@ -155,6 +155,8 @@ Environment:
   PXPIPE_CONFIG           JSON config path (default ~/.config/pxpipe/config.json)
                           supports {"models": [...]} or {"models": "off"}
   PXPIPE_LOG              JSONL events path (default ~/.pxpipe/events.jsonl)
+  PXPIPE_DUMP_DIR         debug: write every rendered PNG here (what the model
+                          sees); off unless set. Compress arm only.
 
 Use with Claude Code:
   ANTHROPIC_BASE_URL=http://127.0.0.1:47821 claude
@@ -875,6 +877,22 @@ async function main(): Promise<void> {
   if (forcePassthrough) {
     console.log('[pxpipe] PXPIPE_DISABLE set — passthrough mode (compress=false), still logging usage + baselines');
   }
+  // Debug aid: when PXPIPE_DUMP_DIR is set, persist every rendered PNG this
+  // process emits, so you can eyeball exactly what the model received (OCR /
+  // legibility audits, demo inspection). Best-effort — never affects requests.
+  // Note: the PXPIPE_DISABLE arm renders nothing, so only the compress proxy
+  // produces files here.
+  let imageDumpDir: string | undefined = process.env.PXPIPE_DUMP_DIR?.trim() || undefined;
+  let imageDumpSeq = 0;
+  if (imageDumpDir) {
+    try {
+      fs.mkdirSync(imageDumpDir, { recursive: true });
+      console.log(`[pxpipe] PXPIPE_DUMP_DIR set — dumping rendered PNGs to ${imageDumpDir}`);
+    } catch (err) {
+      console.warn(`[pxpipe] PXPIPE_DUMP_DIR unusable (${(err as Error).message}) — image dumping disabled`);
+      imageDumpDir = undefined;
+    }
+  }
   // Transform options pass through empty — the proxy uses the DEFAULTS
   // baked into transform.ts. There are no behavior toggles: system slab,
   // reminders, tool_results, and history compression all run
@@ -934,6 +952,24 @@ async function main(): Promise<void> {
       // Feed the dashboard BEFORE tracker.emit — toTrackEvent strips
       // info.firstImagePng, so capturing has to happen on the raw event.
       dashboard.update(e);
+      // Debug: persist this request's rendered PNGs (see PXPIPE_DUMP_DIR above).
+      // Filenames sort by request order: <stamp>_reqNNN_<model>_pNN.png.
+      if (imageDumpDir && e.info?.imagePngs && e.info.imagePngs.length > 0) {
+        const seq = ++imageDumpSeq;
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const modelTag = (e.model ?? 'model').replace(/[^A-Za-z0-9._-]+/g, '_');
+        const pngs = e.info.imagePngs;
+        for (let i = 0; i < pngs.length; i++) {
+          const name = `${stamp}_req${String(seq).padStart(3, '0')}_${modelTag}_p${String(i + 1).padStart(2, '0')}.png`;
+          try {
+            fs.writeFileSync(path.join(imageDumpDir, name), pngs[i]!);
+          } catch (err) {
+            console.warn(`[pxpipe] PNG dump write failed: ${(err as Error).message}`);
+            break; // dir vanished / full — stop hammering it this request
+          }
+        }
+        console.log(`  ↳ dumped ${pngs.length} rendered png(s) → ${imageDumpDir}`);
+      }
       // Terse human-readable console line.
       const extra: string[] = [];
       if (e.info?.reminderImgs) extra.push(`rem+${e.info.reminderImgs}`);

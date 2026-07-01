@@ -11,6 +11,7 @@ PORT_ON=47824          # pxpipe      -> b.sh (right)
 PORT_OFF=47823         # passthrough -> a.sh (left, plain but logged)
 LOG_ON="$HOME/.pxpipe/ab-on.jsonl"
 LOG_OFF="$HOME/.pxpipe/ab-off.jsonl"
+DUMP_DIR="/tmp/ab-png"   # pxpipe arm dumps every rendered PNG here for debug/inspection (wiped each run)
 # Model under test: defaults to Fable 5 — the production default, where Opus is
 # OFF. Pass a model as the first arg to ADD it to the proxy's compress scope:
 #   bash setup.sh           -> Fable only (Opus off, matches production)
@@ -40,8 +41,9 @@ pnpm run build >/tmp/ab-build.log 2>&1 || { echo "  build FAILED -> /tmp/ab-buil
 
 echo "[3/4] start proxies (background, fresh logs)"
 : >"$LOG_ON"; : >"$LOG_OFF"
-PXPIPE_LOG="$LOG_ON"  PORT="$PORT_ON"  PXPIPE_MODELS="$MODELS"                  nohup node dist/node.js >/tmp/ab-on.log  2>&1 & disown
-PXPIPE_LOG="$LOG_OFF" PORT="$PORT_OFF" PXPIPE_MODELS="$MODELS" PXPIPE_DISABLE=1 nohup node dist/node.js >/tmp/ab-off.log 2>&1 & disown
+rm -rf "$DUMP_DIR"; mkdir -p "$DUMP_DIR"   # fresh PNG dump for the pxpipe (compress) arm; the passthrough arm renders nothing
+PXPIPE_LOG="$LOG_ON"  PORT="$PORT_ON"  PXPIPE_MODELS="$MODELS" PXPIPE_DUMP_DIR="$DUMP_DIR" nohup node dist/node.js >/tmp/ab-on.log  2>&1 & disown
+PXPIPE_LOG="$LOG_OFF" PORT="$PORT_OFF" PXPIPE_MODELS="$MODELS" PXPIPE_DISABLE=1            nohup node dist/node.js >/tmp/ab-off.log 2>&1 & disown
 sleep 2
 
 echo "[4/4] seed working copies"
@@ -52,6 +54,7 @@ cat <<EOF
 Ready. Proxies up: pxpipe :$PORT_ON  ·  passthrough :$PORT_OFF
 Compress scope: $MODELS  (Opus is OFF by default — 'setup.sh opus' to include it; pass the SAME model to a.sh/b.sh)
 (logs: $LOG_ON / $LOG_OFF ; stdout: /tmp/ab-on.log /tmp/ab-off.log)
+Rendered PNGs (what the pxpipe model actually sees): $DUMP_DIR   (wiped + refilled each setup; passthrough arm renders none)
 
 In a browser, open the live dashboard (updates as the run goes — no commands):
   http://localhost:$PORT_ON     # pxpipe   -> "THIS SESSION — N% fewer tokens"
