@@ -28,9 +28,9 @@ Complete profile values and evidence are in
 [`MODEL_RENDER_PROFILES.md`](MODEL_RENDER_PROFILES.md).
 
 The Sol row is the **currently configured** geometry, not a successful recall
-claim. Paid raw-image calls tested both that 6×11 row and the old 5×8/152-column
-fallback: each returned 0/4 exact identifiers with four confabulations; 5×8 also
-missed gist. Sol is consequently opt-in. The effective 9×12/84-column Sol
+claim. Paid raw-image calls tested both the earlier 6×11/126-column geometry and
+this 5×8/152-column profile: each returned 0/4 exact identifiers with four
+confabulations; 5×8 also missed gist. Sol is consequently opt-in. The effective 9×12/84-column Sol
 candidate is local-only pending a model call. See
 [`eval/sol-profile/RESULTS.md`](../eval/sol-profile/RESULTS.md).
 
@@ -41,7 +41,8 @@ The 1568×728 Claude page stays inside both bounds, so rasterized glyphs reach
 the vision encoder without the old 0.555× resample.
 
 OpenAI-shaped profiles use portrait strips at or below the 768px short-side
-floor. GPT 5.6 Sol's 126×6+8 produces a 764px strip (1932 tall); Grok's 152×5+8 produces a 768px strip (512 tall).
+floor. GPT 5.6 Sol and Grok both use 152×5+8, a 768px strip (1932 px and 512 px
+tall respectively).
 
 ## Font and Unicode
 
