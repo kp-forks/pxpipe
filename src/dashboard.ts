@@ -71,6 +71,7 @@ import {
 import {
   getAllowedModelBases,
   getConfiguredModelBases,
+  isPxpipeSupportedModel,
   setAllowedModelBases,
 } from './core/applicability.js';
 import type {
@@ -300,6 +301,32 @@ interface Totals {
   startedAt: number;
 }
 
+function emptyTotals(startedAt = Date.now() / 1000): Totals {
+  return {
+    requests: 0,
+    compressedRequests: 0,
+    actualInputWeighted: 0,
+    baselineInputWeighted: 0,
+    outputWeighted: 0,
+    allBaselineEquivalentWeighted: 0,
+    allActualInputWeighted: 0,
+    allOutputWeighted: 0,
+    allUsageRequests: 0,
+    compressedPaidRequests: 0,
+    compressedActualInputWeighted: 0,
+    compressedOutputWeighted: 0,
+    passthroughPaidRequests: 0,
+    passthroughActualInputWeighted: 0,
+    passthroughOutputWeighted: 0,
+    textCharsMeasured: 0,
+    thinkingCharsMeasured: 0,
+    toolUseCharsMeasured: 0,
+    redactedBlockCountMeasured: 0,
+    eventsWithMeasurement: 0,
+    startedAt,
+  };
+}
+
 /*
  * ─────────────────────────────────────────────────────────────────────────
  *  PROVENANCE — every magic number below should trace to one of these:
@@ -435,29 +462,11 @@ export class DashboardState {
    *  long-running deployments. 50 sessions × ~13 numeric fields each is
    *  comfortably under a MB even with fat bucket/passthrough histograms. */
   private static readonly SESSION_CAP = 50;
-  private totals: Totals = {
-    requests: 0,
-    compressedRequests: 0,
-    actualInputWeighted: 0,
-    baselineInputWeighted: 0,
-    outputWeighted: 0,
-    allBaselineEquivalentWeighted: 0,
-    allActualInputWeighted: 0,
-    allOutputWeighted: 0,
-    allUsageRequests: 0,
-    compressedPaidRequests: 0,
-    compressedActualInputWeighted: 0,
-    compressedOutputWeighted: 0,
-    passthroughPaidRequests: 0,
-    passthroughActualInputWeighted: 0,
-    passthroughOutputWeighted: 0,
-    textCharsMeasured: 0,
-    thinkingCharsMeasured: 0,
-    toolUseCharsMeasured: 0,
-    redactedBlockCountMeasured: 0,
-    eventsWithMeasurement: 0,
-    startedAt: Date.now() / 1000,
-  };
+  private readonly startedAt = Date.now() / 1000;
+  /** Lifetime accounting partitioned by exact model id. The dashboard sums
+   * only currently enabled model families, so toggling a model updates the
+   * overall numbers without discarding its history. */
+  private readonly totalsByModel = new Map<string, Totals>();
   /** Bounded ring of the most recently rendered images (last IMAGE_RING_CAP).
    *  Each request that rendered an image pushes one entry; the matching
    *  RecentRow carries `img_id` so the dashboard can pull any image still in
@@ -506,6 +515,27 @@ export class DashboardState {
   ) {
     this.paths = paths;
     this.ccMapFn = ccMapFn ?? (() => claudeCodeMap());
+  }
+
+  private totalsForModel(model: string | undefined): Totals {
+    const key = model ?? '';
+    let totals = this.totalsByModel.get(key);
+    if (!totals) {
+      totals = emptyTotals(this.startedAt);
+      this.totalsByModel.set(key, totals);
+    }
+    return totals;
+  }
+
+  private enabledTotals(): Totals {
+    const combined = emptyTotals(this.startedAt);
+    for (const [model, totals] of this.totalsByModel) {
+      if (!isPxpipeSupportedModel(model)) continue;
+      for (const key of Object.keys(combined) as Array<keyof Totals>) {
+        if (key !== 'startedAt') combined[key] += totals[key];
+      }
+    }
+    return combined;
   }
 
   /** Stash every rendered image into the ring (called from onRequest with the
@@ -563,6 +593,7 @@ export class DashboardState {
     const u = ev.usage;
     const info = ev.info;
     const compressed = info?.compressed === true;
+    const totals = this.totalsForModel(ev.model);
 
     const inp = u?.input_tokens ?? 0;
     const out = u?.output_tokens ?? 0;
@@ -746,16 +777,16 @@ export class DashboardState {
       }
     }
 
-    this.totals.requests += 1;
-    if (compressed) this.totals.compressedRequests += 1;
+    totals.requests += 1;
+    if (compressed) totals.compressedRequests += 1;
 
     // Measured headline: only compressed rows with a usable probe. An
     // uncompressed row contributes zero saved (baseline === actual), so
     // including it here would only dilute the "saved on rows we moved" %.
     if (creditSaving) {
-      this.totals.baselineInputWeighted += baselineInputEff;
-      this.totals.actualInputWeighted += actualInputEff;
-      this.totals.outputWeighted += outputEquiv;
+      totals.baselineInputWeighted += baselineInputEff;
+      totals.actualInputWeighted += actualInputEff;
+      totals.outputWeighted += outputEquiv;
     }
     // All-rows COUNTERFACTUAL spend, ungated on the probe — the honest
     // denominator for "did pxpipe move my real bill". Measured rows
@@ -768,10 +799,10 @@ export class DashboardState {
     if (haveUsage) {
       // baselineInputEff already folds the uncompressed/probe-failed fallback
       // to actualInputEff, so passthrough rows contribute zero saved here.
-      this.totals.allBaselineEquivalentWeighted += baselineInputEff;
-      this.totals.allActualInputWeighted += actualInputEff;
-      this.totals.allOutputWeighted += outputEquiv;
-      this.totals.allUsageRequests += 1;
+      totals.allBaselineEquivalentWeighted += baselineInputEff;
+      totals.allActualInputWeighted += actualInputEff;
+      totals.allOutputWeighted += outputEquiv;
+      totals.allUsageRequests += 1;
       // Direct observed compressed-vs-passthrough split. No counterfactual,
       // no probe gating — just partition the paid-rows set by which path
       // actually ran this turn. Headline answers "is the compressed path
@@ -779,13 +810,13 @@ export class DashboardState {
       // routes each turn) is real; sample counts go to the UI so the
       // operator can judge sufficiency.
       if (compressed) {
-        this.totals.compressedPaidRequests += 1;
-        this.totals.compressedActualInputWeighted += actualInputEff;
-        this.totals.compressedOutputWeighted += outputEquiv;
+        totals.compressedPaidRequests += 1;
+        totals.compressedActualInputWeighted += actualInputEff;
+        totals.compressedOutputWeighted += outputEquiv;
       } else {
-        this.totals.passthroughPaidRequests += 1;
-        this.totals.passthroughActualInputWeighted += actualInputEff;
-        this.totals.passthroughOutputWeighted += outputEquiv;
+        totals.passthroughPaidRequests += 1;
+        totals.passthroughActualInputWeighted += actualInputEff;
+        totals.passthroughOutputWeighted += outputEquiv;
       }
     }
 
@@ -852,11 +883,11 @@ export class DashboardState {
     // content-types; we count an event as "measured" when it has any.
     const m = ev.measurement;
     if (m) {
-      this.totals.textCharsMeasured += m.textChars;
-      this.totals.thinkingCharsMeasured += m.thinkingChars;
-      this.totals.toolUseCharsMeasured += m.toolUseChars;
-      this.totals.redactedBlockCountMeasured += m.redactedBlockCount;
-      this.totals.eventsWithMeasurement += 1;
+      totals.textCharsMeasured += m.textChars;
+      totals.thinkingCharsMeasured += m.thinkingChars;
+      totals.toolUseCharsMeasured += m.toolUseChars;
+      totals.redactedBlockCountMeasured += m.redactedBlockCount;
+      totals.eventsWithMeasurement += 1;
     }
 
     const row: RecentRow = {
@@ -1138,9 +1169,10 @@ export class DashboardState {
     //     What Anthropic's weekly limit actually meters — input × 1.0 +
     //     output × 5.0 (the same ratio as the per-MTok price card). This is
     //     the number that moves your "%% used this week" indicator.
-    const baseline = this.totals.baselineInputWeighted;
-    const actual = this.totals.actualInputWeighted;
-    const output = this.totals.outputWeighted; // already × OUTPUT_TOKEN_RATE
+    const totals = this.enabledTotals();
+    const baseline = totals.baselineInputWeighted;
+    const actual = totals.actualInputWeighted;
+    const output = totals.outputWeighted; // already × OUTPUT_TOKEN_RATE
     const saved = baseline - actual;
     const pctInput = baseline > 0 ? (saved / baseline) * 100 : 0;
     const baselineTotal = baseline + output;
@@ -1154,9 +1186,9 @@ export class DashboardState {
     // and untransformed turns the gate said no to. Otherwise the headline
     // answers "did pxpipe help on the rows where it ran" instead of
     // "did pxpipe move my real bill". The first is a cherry-pick.
-    const allBaselineEquiv = this.totals.allBaselineEquivalentWeighted;
-    const allActual = this.totals.allActualInputWeighted;
-    const allOutput = this.totals.allOutputWeighted;
+    const allBaselineEquiv = totals.allBaselineEquivalentWeighted;
+    const allActual = totals.allActualInputWeighted;
+    const allOutput = totals.allOutputWeighted;
     // Denominator = counterfactual all-rows bill: what the user would have
     // paid with no pxpipe. Bounded ratio at 100%; a single cold-miss
     // compressed request on an otherwise empty session shows ~99% saved,
@@ -1173,22 +1205,22 @@ export class DashboardState {
     // gate is NOT cancelled — the operator interprets that via the
     // sample-count caveat below.
     const compressedTokenEquiv =
-      this.totals.compressedActualInputWeighted +
-      this.totals.compressedOutputWeighted;
+      totals.compressedActualInputWeighted +
+      totals.compressedOutputWeighted;
     const passthroughTokenEquiv =
-      this.totals.passthroughActualInputWeighted +
-      this.totals.passthroughOutputWeighted;
+      totals.passthroughActualInputWeighted +
+      totals.passthroughOutputWeighted;
     const compressedActualUsd =
       (compressedTokenEquiv * ASSUMED_INPUT_USD_PER_MTOK) / 1e6;
     const passthroughActualUsd =
       (passthroughTokenEquiv * ASSUMED_INPUT_USD_PER_MTOK) / 1e6;
     const compressedAvgUsd =
-      this.totals.compressedPaidRequests > 0
-        ? compressedActualUsd / this.totals.compressedPaidRequests
+      totals.compressedPaidRequests > 0
+        ? compressedActualUsd / totals.compressedPaidRequests
         : 0;
     const passthroughAvgUsd =
-      this.totals.passthroughPaidRequests > 0
-        ? passthroughActualUsd / this.totals.passthroughPaidRequests
+      totals.passthroughPaidRequests > 0
+        ? passthroughActualUsd / totals.passthroughPaidRequests
         : 0;
     // Sufficient-sample threshold is a soft heuristic. 20 paid requests per
     // bucket is enough to see a real effect on Opus 4.7 traffic (a single
@@ -1196,14 +1228,14 @@ export class DashboardState {
     // bucket numbers but hides the delta and surfaces "small sample".
     const SUFFICIENT = 20;
     const splitSufficient =
-      this.totals.compressedPaidRequests >= SUFFICIENT &&
-      this.totals.passthroughPaidRequests >= SUFFICIENT;
+      totals.compressedPaidRequests >= SUFFICIENT &&
+      totals.passthroughPaidRequests >= SUFFICIENT;
     const splitDeltaUsd = compressedAvgUsd - passthroughAvgUsd;
 
-    const uptimeSec = Date.now() / 1000 - this.totals.startedAt;
+    const uptimeSec = Date.now() / 1000 - totals.startedAt;
     const payload = {
-      requests: this.totals.requests,
-      compressed_requests: this.totals.compressedRequests,
+      requests: totals.requests,
+      compressed_requests: totals.compressedRequests,
       baseline_input_weighted: Math.round(baseline),
       actual_input_weighted: Math.round(actual),
       saved_input_tokens: Math.round(saved),
@@ -1221,13 +1253,13 @@ export class DashboardState {
       all_baseline_equivalent_weighted: Math.round(allBaselineEquiv),
       all_actual_input_weighted: Math.round(allActual),
       all_output_weighted: Math.round(allOutput),
-      all_usage_requests: this.totals.allUsageRequests,
+      all_usage_requests: totals.allUsageRequests,
       // Direct observed split — replaces "share of spend saved" as the
       // headline. Total actual $ and average $/req per path, plus a delta
       // gated on `split_sufficient_sample`. No counterfactual: each
       // bucket is what each path actually billed.
-      compressed_paid_requests: this.totals.compressedPaidRequests,
-      passthrough_paid_requests: this.totals.passthroughPaidRequests,
+      compressed_paid_requests: totals.compressedPaidRequests,
+      passthrough_paid_requests: totals.passthroughPaidRequests,
       compressed_actual_usd: round4(compressedActualUsd),
       passthrough_actual_usd: round4(passthroughActualUsd),
       compressed_avg_usd_per_request: round4(compressedAvgUsd),
@@ -1254,11 +1286,11 @@ export class DashboardState {
       // operator weigh how representative the numbers are; when it's near
       // `requests`, the gap is real. When it's 0, the scanner never landed
       // (5xx-heavy session, no /v1/messages traffic).
-      measured_text_chars: this.totals.textCharsMeasured,
-      measured_thinking_chars: this.totals.thinkingCharsMeasured,
-      measured_tool_use_chars: this.totals.toolUseCharsMeasured,
-      measured_redacted_block_count: this.totals.redactedBlockCountMeasured,
-      events_with_measurement: this.totals.eventsWithMeasurement,
+      measured_text_chars: totals.textCharsMeasured,
+      measured_thinking_chars: totals.thinkingCharsMeasured,
+      measured_tool_use_chars: totals.toolUseCharsMeasured,
+      measured_redacted_block_count: totals.redactedBlockCountMeasured,
+      events_with_measurement: totals.eventsWithMeasurement,
       uptime_sec: uptimeSec,
       compression_enabled: this.compressionEnabled,
     };

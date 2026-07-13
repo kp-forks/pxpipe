@@ -54,6 +54,7 @@ beforeEach(() => {
   dash = new DashboardState(tmp, async () => new Map());
 });
 afterEach(() => {
+  setAllowedModelBases(null);
   try {
     fs.rmSync(path.dirname(tmp.eventsFile), { recursive: true, force: true });
   } catch {
@@ -313,6 +314,10 @@ describe('dashboard page help UI', () => {
 // GPT branch in update()/replay(): vision-token actual vs o200k text-token
 // baseline, 0.1× automatic prefix cache, no count_tokens probe.
 describe('GPT savings split', () => {
+  beforeEach(() => {
+    setAllowedModelBases(['gpt-5.5']);
+  });
+
   // Imaged 50k o200k text tokens down to 8k vision tokens, with a 2k cached
   // prefix served at 0.1×:
   //   actual   = (10000 - 2000) + 2000×0.1               = 8200
@@ -342,6 +347,29 @@ describe('GPT savings split', () => {
     expect(stats.baseline_input_weighted).toBe(12400);
     expect(stats.saved_input_tokens).toBe(4200);
     expect(stats.saved_pct_input_only).toBeGreaterThan(0);
+  });
+
+  it('includes only currently enabled models in overall stats', async () => {
+    dash.update(structuredClone(gptUpdate) as never);
+    dash.update({
+      ...structuredClone(gptUpdate),
+      model: 'gpt-5.6-sol',
+      info: { ...structuredClone(gptUpdate.info), firstUserSha8: 'gptsol' },
+    } as never);
+
+    let stats = (await dash.serveStats().json()) as StatsPayload;
+    expect(stats.requests).toBe(1);
+    expect(stats.saved_input_tokens).toBe(4200);
+
+    dash.handleModelsToggle('gpt-5.6-sol', true);
+    stats = (await dash.serveStats().json()) as StatsPayload;
+    expect(stats.requests).toBe(2);
+    expect(stats.saved_input_tokens).toBe(8400);
+
+    dash.handleModelsToggle('gpt-5.5', false);
+    stats = (await dash.serveStats().json()) as StatsPayload;
+    expect(stats.requests).toBe(1);
+    expect(stats.saved_input_tokens).toBe(4200);
   });
 
   it('populates As-text / Sent / Cache-hits / Saved recent columns for GPT', async () => {

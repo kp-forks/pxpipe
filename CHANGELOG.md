@@ -15,6 +15,9 @@ behavioral changes, patch = fixes).
   the factsheet.
 - Dashboard exposes the GPT model row and `?` controls now show accessible
   hover/focus tooltips.
+- Dashboard overall totals now include only currently enabled models. Traffic
+  from disabled models, including passthrough subagents, no longer affects the
+  headline numbers; re-enabling a model restores its retained history.
 
 ### Known limitations / evidence
 - A direct `gpt-5.6-sol` raw-image pilot tested **both** the new JetBrains
