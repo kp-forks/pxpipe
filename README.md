@@ -169,7 +169,7 @@ used for these novel-arithmetic rows.
 | verbatim 12-char hex, same dense pages | `grok-4.5` | 15 | 15/15 | **0/6 completed; 9 transport errors** | not measured |
 
 **Harness split:** Fable/Opus quality and SWE-bench rows use **Claude**; Sol and Grok quality use
-**Codex’s Responses provider** (`OPENAI_BASE_URL`, typically ocproxy) — see
+**Codex’s Responses provider** (`OPENAI_BASE_URL`) — see
 [`eval/grok-density/QUALITY_SUITE.md`](eval/grok-density/QUALITY_SUITE.md).
 
 Sol receipts: [`eval/sol-profile/QUALITY_RESULTS.md`](eval/sol-profile/QUALITY_RESULTS.md).
